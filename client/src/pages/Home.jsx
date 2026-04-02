@@ -18,7 +18,7 @@ export default function Home() {
       <div className="flex-1 flex flex-col items-center justify-center px-6 py-12">
         {/* Status line */}
         <div className="text-[10px] font-mono text-terminal-muted tracking-[3px] uppercase mb-6 animate-fade">
-          SYSTEM STATUS: <span className="text-terminal-green">ONLINE</span> · TARGET: ZERODHA · BUILD: v2.1.0
+          SYSTEM STATUS: <span className="text-terminal-green">ONLINE</span> · BUILD: v2.1.0
         </div>
 
         {/* Logo */}
