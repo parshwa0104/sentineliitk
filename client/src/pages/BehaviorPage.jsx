@@ -7,6 +7,7 @@ import {
 } from 'recharts';
 import { eviHistory } from '../utils/mockData';
 import { getBehaviorEvents, isBackendOnline, onConnectionChange } from '../utils/api';
+import { useEVI } from '../utils/eviStore';
 
 // Hardcoded fallback data for demo mode
 const fallbackHourlyData = [
@@ -51,7 +52,6 @@ function computeStatsFromEvents(events) {
   const interventions = events.filter(e => e.interventionShown).length;
   const held = events.filter(e => e.type === 'sell_cancelled').length;
 
-  // Compute average EVI from events that have eviAtTime
   const eviEvents = events.filter(e => e.eviAtTime != null);
   const avgEvi = eviEvents.length > 0
     ? Math.round(eviEvents.reduce((s, e) => s + e.eviAtTime, 0) / eviEvents.length)
@@ -60,10 +60,8 @@ function computeStatsFromEvents(events) {
     ? Math.max(...eviEvents.map(e => e.eviAtTime))
     : 73;
 
-  // Estimate savings (~₹1,400 per blocked trade on average)
   const saved = held * 1400;
 
-  // Build weekly actions from events
   const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const weeklyMap = {};
   dayNames.forEach(d => { weeklyMap[d] = { day: d, holds: 0, sells: 0, blocked: 0 }; });
@@ -78,6 +76,43 @@ function computeStatsFromEvents(events) {
   return {
     panicSells, interventions, held, avgEvi, peakEvi, saved, weeklyActions,
   };
+}
+
+// Compute live bias data from EVI events
+function computeBiasFromEvents(events) {
+  const biases = {
+    'Loss Aversion': 30,
+    'Recency': 30,
+    'Herding': 30,
+    'Anchoring': 30,
+    'FOMO': 30,
+    'Disposition': 30,
+  };
+
+  events.forEach(e => {
+    if (e.type === 'sell_click' || e.type === 'sell_attempt') {
+      biases['Loss Aversion'] = Math.min(100, biases['Loss Aversion'] + 5);
+      biases['Disposition'] = Math.min(100, biases['Disposition'] + 3);
+    }
+    if (e.type === 'sell_confirmed') {
+      biases['Loss Aversion'] = Math.min(100, biases['Loss Aversion'] + 8);
+      biases['Recency'] = Math.min(100, biases['Recency'] + 5);
+    }
+    if (e.type === 'rapid_portfolio_view' || e.type === 'rapid_stock_switch') {
+      biases['Recency'] = Math.min(100, biases['Recency'] + 3);
+    }
+    if (e.type === 'sell_hover') {
+      biases['FOMO'] = Math.min(100, biases['FOMO'] + 2);
+    }
+    if (e.type === 'sell_cancelled') {
+      biases['Loss Aversion'] = Math.max(0, biases['Loss Aversion'] - 3);
+    }
+    if (e.type === 'ai_chat_query') {
+      biases['Anchoring'] = Math.max(0, biases['Anchoring'] - 2);
+    }
+  });
+
+  return Object.entries(biases).map(([bias, score]) => ({ bias, score }));
 }
 
 const TermTooltip = ({ active, payload, label }) => {
@@ -102,6 +137,19 @@ export default function BehaviorPage() {
   const [stats, setStats] = useState(null);
   const [weeklyActions, setWeeklyActions] = useState(fallbackWeeklyActions);
   const [dataSource, setDataSource] = useState('mock'); // 'mock' | 'live'
+
+  // Get live EVI data from centralized store
+  const { score: currentEVI, history: liveEviHistory, events: eviEvents } = useEVI();
+
+  // Compute live bias data from user events
+  const liveBiasData = eviEvents.length > 0
+    ? computeBiasFromEvents(eviEvents)
+    : fallbackBiasData;
+
+  // Use live EVI history from the store for the intraday chart, fall back to hardcoded
+  const intradayData = liveEviHistory.length >= 3
+    ? liveEviHistory.map(h => ({ time: h.time, evi: h.evi, action: '' }))
+    : fallbackHourlyData;
 
   useEffect(() => {
     const unsub = onConnectionChange(setBackendOnline);
@@ -129,10 +177,11 @@ export default function BehaviorPage() {
   }, [profile?.userId, backendOnline]);
 
   const summary = stats || {
-    avgEvi: 53, peakEvi: 73, panicSells: 9, interventions: 8, saved: 12400,
+    avgEvi: currentEVI, peakEvi: Math.max(currentEVI, 73), panicSells: 9, interventions: 8, saved: 12400,
   };
 
-  const biasData = fallbackBiasData; // bias detection requires more data — always use baseline for now
+  // Find dominant bias
+  const dominantBias = [...liveBiasData].sort((a, b) => b.score - a.score)[0];
 
   return (
     <div className="min-h-screen bg-black text-white">
@@ -148,7 +197,15 @@ export default function BehaviorPage() {
             <Link to="/ai-chat" className="btn-terminal px-3 py-1 text-xs font-medium text-terminal-dim hover:text-white hover:bg-white/5 no-underline">AI COACH</Link>
           </nav>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
+          {/* Live EVI indicator */}
+          <div className={`flex items-center gap-1.5 px-2 py-0.5 border text-[9px] font-mono uppercase tracking-wider
+            ${currentEVI > 70 ? 'border-terminal-red/30 text-terminal-red/70 animate-blink'
+              : currentEVI > 50 ? 'border-terminal-amber/30 text-terminal-amber/70'
+              : 'border-terminal-green/30 text-terminal-green/70'}`}>
+            <div className={`w-1.5 h-1.5 rounded-full ${currentEVI > 70 ? 'bg-terminal-red' : currentEVI > 50 ? 'bg-terminal-amber' : 'bg-terminal-green'} animate-blink`} />
+            EVI: {currentEVI} · LIVE
+          </div>
           <span className={`text-[9px] font-mono px-2 py-0.5 border uppercase tracking-wider
             ${dataSource === 'live'
               ? 'border-terminal-green/30 text-terminal-green/70'
@@ -161,7 +218,7 @@ export default function BehaviorPage() {
       {/* Summary Strip */}
       <div className="border-b border-terminal-border grid grid-cols-5 divide-x divide-terminal-border">
         {[
-          { label: 'AVG EVI', value: String(summary.avgEvi), color: 'text-terminal-amber' },
+          { label: 'CURRENT EVI', value: String(currentEVI), color: currentEVI > 70 ? 'text-terminal-red' : currentEVI > 50 ? 'text-terminal-amber' : 'text-terminal-green' },
           { label: 'PEAK EVI', value: String(summary.peakEvi), color: 'text-terminal-red' },
           { label: 'PANIC SELLS', value: String(summary.panicSells), color: 'text-terminal-red' },
           { label: 'INTERVENTIONS', value: String(summary.interventions), color: 'text-white' },
@@ -169,7 +226,7 @@ export default function BehaviorPage() {
         ].map((s, i) => (
           <div key={i} className="px-4 py-2">
             <div className="text-[9px] text-terminal-muted uppercase tracking-[1.5px]">{s.label}</div>
-            <div className={`font-mono text-lg font-bold ${s.color}`}>{s.value}</div>
+            <div className={`font-mono text-lg font-bold ${s.color} transition-all duration-300`}>{s.value}</div>
           </div>
         ))}
       </div>
@@ -200,11 +257,21 @@ export default function BehaviorPage() {
             </ResponsiveContainer>
           </div>
 
-          {/* Intraday */}
+          {/* Intraday — LIVE from EVI store */}
           <div className="p-4">
-            <div className="text-[10px] uppercase tracking-[2px] text-terminal-muted mb-3">INTRADAY EVI — THURSDAY</div>
+            <div className="flex items-center gap-2 mb-3">
+              <div className="text-[10px] uppercase tracking-[2px] text-terminal-muted">
+                {liveEviHistory.length >= 3 ? 'LIVE SESSION EVI' : 'INTRADAY EVI — THURSDAY'}
+              </div>
+              {liveEviHistory.length >= 3 && (
+                <div className="flex items-center gap-1 px-1.5 py-0.5 border border-terminal-cyan/30">
+                  <div className="w-1 h-1 rounded-full bg-terminal-cyan animate-blink" />
+                  <span className="text-[8px] text-terminal-cyan font-mono">LIVE</span>
+                </div>
+              )}
+            </div>
             <ResponsiveContainer width="100%" height={260}>
-              <AreaChart data={fallbackHourlyData} margin={{ top: 5, right: 5, left: -25, bottom: 0 }}>
+              <AreaChart data={intradayData} margin={{ top: 5, right: 5, left: -25, bottom: 0 }}>
                 <defs>
                   <linearGradient id="intGrad" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#ff0033" stopOpacity={0.2} />
@@ -242,11 +309,19 @@ export default function BehaviorPage() {
             </ResponsiveContainer>
           </div>
 
-          {/* Bias Radar */}
+          {/* Bias Radar — LIVE from user events */}
           <div className="p-4">
-            <div className="text-[10px] uppercase tracking-[2px] text-terminal-muted mb-3">COGNITIVE BIAS PROFILE</div>
+            <div className="flex items-center gap-2 mb-3">
+              <div className="text-[10px] uppercase tracking-[2px] text-terminal-muted">COGNITIVE BIAS PROFILE</div>
+              {eviEvents.length > 0 && (
+                <div className="flex items-center gap-1 px-1.5 py-0.5 border border-terminal-cyan/30">
+                  <div className="w-1 h-1 rounded-full bg-terminal-cyan animate-blink" />
+                  <span className="text-[8px] text-terminal-cyan font-mono">LIVE</span>
+                </div>
+              )}
+            </div>
             <ResponsiveContainer width="100%" height={260}>
-              <RadarChart data={biasData}>
+              <RadarChart data={liveBiasData}>
                 <PolarGrid stroke="#1a1a1a" />
                 <PolarAngleAxis dataKey="bias" tick={{ fill: '#555', fontSize: 9, fontFamily: 'monospace' }} />
                 <PolarRadiusAxis domain={[0, 100]} tick={false} axisLine={false} />
@@ -254,7 +329,7 @@ export default function BehaviorPage() {
               </RadarChart>
             </ResponsiveContainer>
             <div className="text-center text-[10px] font-mono text-terminal-muted mt-2">
-              DOMINANT: <span className="text-terminal-red font-bold">LOSS AVERSION (82)</span>
+              DOMINANT: <span className="text-terminal-red font-bold">{dominantBias.bias.toUpperCase()} ({dominantBias.score})</span>
             </div>
           </div>
         </div>
@@ -264,10 +339,10 @@ export default function BehaviorPage() {
           <div className="p-4">
             <div className="flex items-center gap-2 mb-2">
               <span className="font-mono text-[9px] px-1 py-0.5 bg-terminal-red/10 text-terminal-red border border-terminal-red/30">ALERT</span>
-              <span className="text-[10px] font-bold uppercase tracking-wider">THURSDAY SPIKE</span>
+              <span className="text-[10px] font-bold uppercase tracking-wider">CURRENT SESSION</span>
             </div>
             <div className="text-[11px] text-terminal-dim leading-relaxed font-mono">
-              EVI hit {summary.peakEvi} — NIFTY dipped 2.3%. {summary.panicSells} panic sell attempts. {summary.interventions > 0 ? `${summary.interventions} interventions triggered.` : ''} Est. savings: ₹{summary.saved.toLocaleString('en-IN')}.
+              EVI currently at {currentEVI}. {currentEVI > 60 ? 'Emotional override detected. Sell orders being intercepted.' : 'Operating within normal parameters.'} {summary.interventions > 0 ? `${summary.interventions} interventions triggered.` : ''} Est. savings: ₹{summary.saved.toLocaleString('en-IN')}.
             </div>
           </div>
           <div className="p-4">
@@ -285,7 +360,9 @@ export default function BehaviorPage() {
               <span className="text-[10px] font-bold uppercase tracking-wider">RECOMMENDATION</span>
             </div>
             <div className="text-[11px] text-terminal-dim leading-relaxed font-mono">
-              Enable 24h cooling period when EVI {'>'} 60. Auto-hold all sell orders for next-day review.
+              {currentEVI > 60
+                ? 'EVI above threshold. Enable 24h cooling period. Auto-hold all sell orders for next-day review.'
+                : 'EVI within safe range. Continue monitoring. Consult AI Coach for strategy refinement.'}
             </div>
           </div>
         </div>

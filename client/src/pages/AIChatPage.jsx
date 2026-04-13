@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { postChat, isBackendOnline, onConnectionChange } from '../utils/api';
-import { initializePrices, getPrice, defaultPortfolio, mockStocks } from '../utils/mockData';
+import { postChat, isBackendOnline, onConnectionChange, fetchStockQuotes } from '../utils/api';
+import { initializePrices, getPrice, defaultPortfolio, mockStocks, setLivePrices, isLivePricing } from '../utils/mockData';
+import { useEVI } from '../utils/eviStore';
 
 const suggestedPrompts = [
   'Why do I keep panic selling?',
@@ -61,15 +62,17 @@ ${userMsg.toLowerCase().includes('sell')
     ? 'CAUTION: Sell impulse during high EVI correlates with regret in 82% of cases. 91% of operators in similar states held and recovered.'
     : 'Your engagement level suggests heightened awareness. Channel this into analysis, not action.'}
 
-Connect to the backend server to get live AI analysis. Check that the server is running and GROQ_API_KEY or ANTHROPIC_API_KEY is configured.`;
+Connect to the backend server to get live AI analysis. Check that the server is running and GEMINI_API_KEY is configured.`;
 }
 
 export default function AIChatPage() {
   const profile = JSON.parse(localStorage.getItem('sentinel_profile') || '{}');
+  const { score: evi, recordEvent } = useEVI();
+
   const [messages, setMessages] = useState([
     {
       role: 'assistant',
-      content: `SENTINEL.AI INITIALIZED\n\nPortfolio state loaded. EVI: ${profile.eviScore || 73} (CRITICAL)\nBehavioral patterns detected: 5 panic sells this week, EVI peaked Thursday.\n\nReady for analysis. Query your trading psychology, biases, or request strategy recommendations.`,
+      content: `SENTINEL.AI INITIALIZED\n\nPortfolio state loaded. EVI: ${evi} (${evi > 70 ? 'CRITICAL' : evi > 50 ? 'ELEVATED' : 'NORMAL'})\nBehavioral patterns being monitored in real-time.\n\nReady for analysis. Query your trading psychology, biases, or request strategy recommendations.`,
     },
   ]);
   const [input, setInput] = useState('');
@@ -85,13 +88,29 @@ export default function AIChatPage() {
 
   useEffect(() => {
     initializePrices();
+
+    // Try to get live prices
+    const symbols = defaultPortfolio.map(h => h.symbol);
+    fetchStockQuotes(symbols)
+      .then(data => {
+        if (data?.quotes?.length > 0) {
+          setLivePrices(data.quotes);
+        }
+        updatePortfolioData();
+      })
+      .catch(() => {
+        updatePortfolioData();
+      });
+  }, []);
+
+  const updatePortfolioData = () => {
     const updated = defaultPortfolio.map(holding => {
       const stock = mockStocks.find(s => s.symbol === holding.symbol);
       const priceData = getPrice(holding.symbol);
       return { ...holding, ...stock, ...priceData };
     });
     setPortfolio(updated);
-  }, []);
+  };
 
   const scrollToBottom = () => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); };
   useEffect(() => { scrollToBottom(); }, [messages]);
@@ -103,23 +122,26 @@ export default function AIChatPage() {
     setMessages(prev => [...prev, { role: 'user', content: userMsg }]);
     setLoading(true);
 
+    // Record AI chat interaction in EVI store
+    recordEvent('ai_chat_query', { message: userMsg.slice(0, 100) });
+
     try {
       const portfolioSummary = portfolio.slice(0, 5)
         .map(h => `${h.symbol}: ₹${h.price?.toFixed(0) || 0} (${h.changePercent >= 0 ? '+' : ''}${h.changePercent?.toFixed(1) || 0}%)`)
         .join(', ');
+
       const data = await postChat({
-        message: userMsg, eviScore: 73, portfolio: portfolioSummary,
-        recentActions: '5 panic sells this week, EVI peaked Thursday at 73',
+        message: userMsg,
+        eviScore: evi,
+        portfolio: portfolioSummary,
+        recentActions: `Current EVI: ${evi}. Session active. ${isLivePricing() ? 'Live NSE prices active.' : 'Using simulated prices.'}`,
       });
       setMessages(prev => [...prev, { role: 'assistant', content: data.reply }]);
     } catch (err) {
-      // Show clear offline indicator instead of silently faking AI responses
       const serverError = err?.response?.data?.error;
       if (serverError) {
-        // Server responded but with an error (e.g. 503 no API key)
         setMessages(prev => [...prev, { role: 'assistant', content: `[ERROR] ${serverError}` }]);
       } else {
-        // Network error — server unreachable, use offline fallback
         setMessages(prev => [...prev, { role: 'assistant', content: getOfflineFallback(userMsg) }]);
       }
     }
@@ -144,7 +166,14 @@ export default function AIChatPage() {
             <button className="btn-terminal px-3 py-1 text-xs font-medium bg-terminal-green/10 text-terminal-green">AI COACH</button>
           </nav>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
+          {/* Live EVI indicator */}
+          <div className={`flex items-center gap-1.5 px-2 py-0.5 border text-[9px] font-mono uppercase tracking-wider
+            ${evi > 70 ? 'border-terminal-red/30 text-terminal-red/70 animate-blink'
+              : evi > 50 ? 'border-terminal-amber/30 text-terminal-amber/70'
+              : 'border-terminal-green/30 text-terminal-green/70'}`}>
+            EVI: {evi}
+          </div>
           <div className={`w-2 h-2 ${backendOnline ? 'bg-terminal-green' : 'bg-terminal-red'} animate-blink`} />
           <span className="text-[10px] font-mono text-terminal-dim">
             {backendOnline ? 'AI CONNECTED' : 'OFFLINE MODE'}
@@ -214,17 +243,26 @@ export default function AIChatPage() {
           {/* EVI Status */}
           <div className="p-4">
             <div className="text-[10px] text-terminal-muted uppercase tracking-[2px] mb-2">CURRENT EVI</div>
-            <div className="font-mono text-4xl font-bold text-terminal-red">73</div>
-            <div className="font-mono text-[10px] text-terminal-red/70 mt-1 animate-blink">■ CRITICAL — PANICKING</div>
+            <div className={`font-mono text-4xl font-bold transition-all duration-500
+              ${evi > 70 ? 'text-terminal-red' : evi > 50 ? 'text-terminal-amber' : 'text-terminal-green'}`}>
+              {evi}
+            </div>
+            <div className={`font-mono text-[10px] mt-1 animate-blink
+              ${evi > 70 ? 'text-terminal-red/70' : evi > 50 ? 'text-terminal-amber/70' : 'text-terminal-green/70'}`}>
+              ■ {evi > 70 ? 'CRITICAL — PANICKING' : evi > 50 ? 'ELEVATED — STRESSED' : 'NORMAL — CALM'}
+            </div>
+            <div className="mt-2 text-[9px] text-terminal-muted font-mono">
+              REAL-TIME · BASED ON YOUR ACTIONS
+            </div>
           </div>
 
           {/* Quick Stats */}
           <div className="p-4">
-            <div className="text-[10px] text-terminal-muted uppercase tracking-[2px] mb-3">THIS WEEK</div>
+            <div className="text-[10px] text-terminal-muted uppercase tracking-[2px] mb-3">THIS SESSION</div>
             {[
-              { label: 'PANIC SELLS', value: '5', color: 'text-terminal-red' },
-              { label: 'INTERVENTIONS', value: '8', color: 'text-terminal-amber' },
-              { label: 'POSITIONS HELD', value: '6', color: 'text-terminal-green' },
+              { label: 'DATA SOURCE', value: isLivePricing() ? 'LIVE NSE' : 'SIMULATED', color: isLivePricing() ? 'text-terminal-cyan' : 'text-terminal-amber' },
+              { label: 'EVI STATUS', value: evi > 70 ? 'CRITICAL' : evi > 50 ? 'ELEVATED' : 'NORMAL', color: evi > 70 ? 'text-terminal-red' : evi > 50 ? 'text-terminal-amber' : 'text-terminal-green' },
+              { label: 'AI ENGINE', value: backendOnline ? 'GEMINI' : 'OFFLINE', color: backendOnline ? 'text-terminal-green' : 'text-terminal-red' },
             ].map((s, i) => (
               <div key={i} className="flex justify-between items-center py-1 border-b border-terminal-border/30">
                 <span className="text-[10px] text-terminal-muted font-mono">{s.label}</span>

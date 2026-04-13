@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const Anthropic = require('@anthropic-ai/sdk').default;
 const OpenAI = require('openai');
+const { GoogleGenAI } = require('@google/genai');
 const rateLimit = require('express-rate-limit');
 
 const chatRateLimit = rateLimit({
@@ -32,10 +33,23 @@ function getGroqClient() {
   });
 }
 
+function getGeminiClient() {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    return null;
+  }
+
+  return new GoogleGenAI({ apiKey });
+}
+
 function resolveProvider() {
   const configured = (process.env.AI_PROVIDER || '').trim().toLowerCase();
-  if (configured === 'groq' || configured === 'anthropic') {
+  if (configured === 'groq' || configured === 'anthropic' || configured === 'gemini') {
     return configured;
+  }
+
+  if (process.env.GEMINI_API_KEY) {
+    return 'gemini';
   }
 
   if (process.env.GROQ_API_KEY) {
@@ -118,7 +132,7 @@ User message: ${cleanMessage}`;
       const reply = completion.choices?.[0]?.message?.content?.trim()
         || 'I need a moment to think about that.';
 
-      return res.json({ reply });
+      return res.json({ reply, provider: 'groq' });
     }
 
     if (provider === 'anthropic') {
@@ -137,14 +151,60 @@ User message: ${cleanMessage}`;
       });
 
       const reply = response.content[0]?.text || 'I need a moment to think about that.';
-      return res.json({ reply });
+      return res.json({ reply, provider: 'anthropic' });
+    }
+
+    if (provider === 'gemini') {
+      const gemini = getGeminiClient();
+      if (!gemini) {
+        return res.status(503).json({
+          error: 'AI service not configured. Set GEMINI_API_KEY in server/.env',
+        });
+      }
+
+      let reply = '';
+      let retries = 2;
+
+      while (retries >= 0) {
+        try {
+          const response = await gemini.models.generateContent({
+            model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+            contents: contextMessage,
+            config: {
+              systemInstruction: SYSTEM_PROMPT,
+              temperature: 0.4,
+              maxOutputTokens: 1500,
+            }
+          });
+
+          reply = response.text || '';
+
+          // Detect mid-sentence API truncation/cut-offs
+          if (reply.length > 20 && !/[.!?]$/.test(reply.trim()) && retries > 0) {
+            retries--;
+            continue;
+          }
+          break; // Success
+        } catch (err) {
+          if (retries === 0) throw err;
+          retries--;
+          await new Promise(r => setTimeout(r, 1000)); // wait 1s before retry
+        }
+      }
+
+      if (!reply) {
+        reply = 'I am currently analyzing your patterns, but my connection is unstable. Please hold your positions and take a deep breath.';
+      }
+
+      return res.json({ reply, provider: 'gemini' });
     }
 
     return res.status(503).json({
-      error: 'AI service not configured. Set GROQ_API_KEY or ANTHROPIC_API_KEY in server/.env',
+      error: 'AI service not configured. Set GEMINI_API_KEY, GROQ_API_KEY or ANTHROPIC_API_KEY in server/.env',
     });
   } catch (err) {
-    console.error('AI chat error:', err.message);
+    const detail = err?.response?.data || err?.errorDetails || err?.message || 'Unknown error';
+    console.error('AI chat error:', JSON.stringify(detail).slice(0, 500));
     return res.status(502).json({ error: 'AI provider request failed' });
   }
 });

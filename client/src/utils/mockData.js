@@ -126,6 +126,36 @@ export function getAllPrices() {
   }));
 }
 
+// ── Live price injection ─────────────────────────────────────────
+// Called by Dashboard when real Yahoo Finance quotes arrive
+let _isLive = false;
+
+export function setLivePrices(quotes) {
+  if (!Array.isArray(quotes) || quotes.length === 0) return;
+  _isLive = true;
+  quotes.forEach(q => {
+    if (!q.symbol || !q.price) return;
+    const existing = livePrices[q.symbol];
+    livePrices[q.symbol] = {
+      price: q.price,
+      prevClose: q.prevClose || existing?.prevClose || q.price,
+      dayHigh: q.dayHigh || existing?.dayHigh || q.price,
+      dayLow: q.dayLow || existing?.dayLow || q.price,
+      open: q.open || existing?.open || q.price,
+      volume: q.volume || 0,
+    };
+  });
+}
+
+export function isLivePricing() {
+  return _isLive;
+}
+
+export function resetToMock() {
+  _isLive = false;
+  initializePrices();
+}
+
 // ── EVI history (past 7 days) ────────────────────────────────────
 const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 export const eviHistory = days.map((day, i) => ({

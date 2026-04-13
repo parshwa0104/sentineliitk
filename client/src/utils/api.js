@@ -82,4 +82,15 @@ export async function checkHealth() {
   return res.data;
 }
 
+export async function fetchStockQuotes(symbols) {
+  const symbolStr = Array.isArray(symbols) ? symbols.join(',') : symbols;
+  const res = await api.get(`/stocks/quotes?symbols=${encodeURIComponent(symbolStr)}`);
+  return res.data;
+}
+
+export async function fetchMarketStatus() {
+  const res = await api.get('/stocks/market-status');
+  return res.data;
+}
+
 export default api;

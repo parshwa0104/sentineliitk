@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom';
 const features = [
   { code: '01', title: 'EMOTIONAL VOLATILITY INDEX', desc: 'Real-time 0–100 behavioral score computed from trading patterns, market volatility, and session behavior.' },
   { code: '02', title: '4-LAYER INTERVENTION', desc: 'Progressive disclosure modal intercepting panic sells with self-check, impact analysis, history, and peer data.' },
-  { code: '03', title: 'AI BEHAVIORAL COACH', desc: 'Claude-powered advisor with full portfolio context. Identifies cognitive biases and provides actionable counter-strategies.' },
+  { code: '03', title: 'AI BEHAVIORAL COACH', desc: 'Gemini-powered advisor with full portfolio context. Identifies cognitive biases and provides actionable counter-strategies.' },
   { code: '04', title: 'BEHAVIOR ANALYTICS', desc: 'Weekly emotional arc, bias radar profile, intervention success rate, and estimated savings from blocked panic trades.' },
 ];
 
@@ -55,7 +55,7 @@ export default function Home() {
 
         {/* Footer */}
         <div className="mt-10 text-[10px] font-mono text-terminal-muted tracking-wider">
-          ₹0 COST · RUNS ALONGSIDE TRADING APP · MOCK DATA FOR DEMO
+          ₹0 COST · LIVE NSE DATA · GEMINI AI · REAL-TIME EVI ENGINE
         </div>
       </div>
     </div>

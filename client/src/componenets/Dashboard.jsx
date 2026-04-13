@@ -1,10 +1,15 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  mockStocks, defaultPortfolio, initializePrices, tickPrices, getPrice, eviHistory
+  mockStocks, defaultPortfolio, initializePrices, tickPrices, getPrice, eviHistory,
+  setLivePrices, isLivePricing,
 } from '../utils/mockData';
-import { calculateEVI, getEVILabel } from '../utils/eviCalculator';
-import { logBehaviorEvent, getServerEVI, checkHealth, isBackendOnline, onConnectionChange } from '../utils/api';
+import { getEVILabel } from '../utils/eviCalculator';
+import {
+  logBehaviorEvent, getServerEVI, checkHealth, isBackendOnline, onConnectionChange,
+  fetchStockQuotes, fetchMarketStatus,
+} from '../utils/api';
+import { useEVI } from '../utils/eviStore';
 import InterventionModal from './InterventionalModal';
 import BehaviorGraph from './BehavioraGraph';
 import AIChat from './AIChat';
@@ -21,20 +26,33 @@ function EVIMeter({ value }) {
     return '#ff0033';
   };
   const activeSegments = Math.round((value / 100) * segments);
+  const { label } = getEVILabel(value);
 
   return (
     <div className="w-full">
       <div className="flex justify-between items-baseline mb-1">
         <span className="text-[10px] uppercase tracking-[2px] text-terminal-muted">Emotional Volatility Index</span>
-        <span className="font-mono text-2xl font-bold" style={{ color: value > 70 ? '#ff0033' : value > 50 ? '#ffaa00' : '#00ff41' }}>
-          {value}
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 border font-mono"
+            style={{
+              color: value > 70 ? '#ff0033' : value > 50 ? '#ffaa00' : '#00ff41',
+              borderColor: value > 70 ? '#ff003333' : value > 50 ? '#ffaa0033' : '#00ff4133',
+              backgroundColor: value > 70 ? '#ff003310' : value > 50 ? '#ffaa0010' : '#00ff4110',
+            }}
+          >
+            {label}
+          </span>
+          <span className="font-mono text-2xl font-bold transition-all duration-500"
+            style={{ color: value > 70 ? '#ff0033' : value > 50 ? '#ffaa00' : '#00ff41' }}>
+            {value}
+          </span>
+        </div>
       </div>
       <div className="flex gap-[2px] h-6 border border-terminal-border p-[2px] bg-black">
         {Array.from({ length: segments }, (_, i) => (
           <div
             key={i}
-            className="evi-segment flex-1"
+            className="evi-segment flex-1 transition-all duration-300"
             style={{
               backgroundColor: i < activeSegments ? getSegmentColor(i) : '#111',
               opacity: i < activeSegments ? 1 : 0.3,
@@ -59,14 +77,36 @@ function EVIMeter({ value }) {
 }
 
 // ── Connection status badge ──────────────────────────────────────
-function ConnectionBadge({ online }) {
+function ConnectionBadge({ online, livePrices }) {
   return (
-    <div className={`flex items-center gap-1.5 px-2 py-0.5 border text-[9px] font-mono uppercase tracking-wider transition-colors duration-300
-      ${online
+    <div className="flex items-center gap-3">
+      <div className={`flex items-center gap-1.5 px-2 py-0.5 border text-[9px] font-mono uppercase tracking-wider transition-colors duration-300
+        ${online
+          ? 'border-terminal-green/30 text-terminal-green/70'
+          : 'border-terminal-red/30 text-terminal-red/70 animate-blink'}`}>
+        <div className={`w-1.5 h-1.5 rounded-full ${online ? 'bg-terminal-green' : 'bg-terminal-red'}`} />
+        {online ? 'BACKEND ONLINE' : 'OFFLINE — DEMO MODE'}
+      </div>
+      {livePrices && (
+        <div className="flex items-center gap-1.5 px-2 py-0.5 border border-terminal-cyan/30 text-[9px] font-mono uppercase tracking-wider text-terminal-cyan/70">
+          <div className="w-1.5 h-1.5 rounded-full bg-terminal-cyan animate-blink" />
+          LIVE NSE PRICES
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Market status badge ──────────────────────────────────────────
+function MarketStatusBadge({ status }) {
+  if (!status) return null;
+  return (
+    <div className={`flex items-center gap-1.5 px-2 py-0.5 border text-[9px] font-mono uppercase tracking-wider
+      ${status.isOpen
         ? 'border-terminal-green/30 text-terminal-green/70'
-        : 'border-terminal-red/30 text-terminal-red/70 animate-blink'}`}>
-      <div className={`w-1.5 h-1.5 rounded-full ${online ? 'bg-terminal-green' : 'bg-terminal-red'}`} />
-      {online ? 'BACKEND ONLINE' : 'OFFLINE — DEMO MODE'}
+        : 'border-terminal-amber/30 text-terminal-amber/70'}`}>
+      <div className={`w-1.5 h-1.5 rounded-full ${status.isOpen ? 'bg-terminal-green animate-blink' : 'bg-terminal-amber'}`} />
+      NSE {status.isOpen ? 'OPEN' : 'CLOSED'} · {status.currentIST} IST
     </div>
   );
 }
@@ -74,7 +114,6 @@ function ConnectionBadge({ online }) {
 export default function Dashboard() {
   const profile = JSON.parse(localStorage.getItem('sentinel_profile') || '{}');
   const [portfolio, setPortfolio] = useState([]);
-  const [evi, setEVI] = useState(73);
   const [showModal, setShowModal] = useState(false);
   const [selectedStock, setSelectedStock] = useState(null);
   const [activePanel, setActivePanel] = useState('chat');
@@ -82,46 +121,74 @@ export default function Dashboard() {
   const [tick, setTick] = useState(0);
   const [toast, setToast] = useState(null);
   const [backendOnline, setBackendOnline] = useState(isBackendOnline());
+  const [liveMode, setLiveMode] = useState(false);
+  const [marketStatus, setMarketStatus] = useState(null);
+  const [lastPriceUpdate, setLastPriceUpdate] = useState(null);
+
+  // EVI from centralized store
+  const { score: evi, recordEvent, updateMarketData } = useEVI();
 
   // Track backend connectivity
   useEffect(() => {
     const unsub = onConnectionChange(setBackendOnline);
-    // Ping health on mount
     checkHealth().catch(() => setBackendOnline(false));
     return unsub;
   }, []);
 
+  // Initialize mock prices as baseline
   useEffect(() => { initializePrices(); updatePortfolio(); }, []);
 
+  // ── Live stock price fetching ──────────────────────────────────
   useEffect(() => {
+    if (!backendOnline) return;
+
+    // Get market status
+    fetchMarketStatus()
+      .then(setMarketStatus)
+      .catch(() => {});
+
+    // Fetch live prices immediately and then every 10s
+    const symbols = defaultPortfolio.map(h => h.symbol);
+
+    const fetchLive = () => {
+      fetchStockQuotes(symbols)
+        .then(data => {
+          if (data?.quotes && data.quotes.length > 0) {
+            setLivePrices(data.quotes);
+            setLiveMode(true);
+            setLastPriceUpdate(new Date());
+            updatePortfolio();
+          }
+        })
+        .catch(() => {
+          // Fall back to mock ticks
+          if (!isLivePricing()) {
+            tickPrices();
+            updatePortfolio();
+          }
+        });
+    };
+
+    fetchLive();
+    const interval = setInterval(fetchLive, 10000); // Every 10 seconds for live data
+    return () => clearInterval(interval);
+  }, [backendOnline]);
+
+  // ── Mock tick fallback (only when not live) ────────────────────
+  useEffect(() => {
+    if (liveMode) return; // Don't run mock ticks if we have live data
     const interval = setInterval(() => {
       tickPrices();
       updatePortfolio();
       setTick(t => t + 1);
     }, 3000);
     return () => clearInterval(interval);
-  }, []);
+  }, [liveMode]);
 
+  // Toast auto-dismiss
   useEffect(() => {
     if (toast) { const t = setTimeout(() => setToast(null), 3000); return () => clearTimeout(t); }
   }, [toast]);
-
-  // Fetch server-side EVI periodically when backend is available
-  useEffect(() => {
-    if (!profile?.userId || !backendOnline) return;
-    const fetchEVI = () => {
-      getServerEVI(profile.userId)
-        .then(data => {
-          if (data?.evi != null) {
-            setEVI(prev => Math.round(prev * 0.5 + data.evi * 0.5));
-          }
-        })
-        .catch(() => { /* silent — local EVI is fallback */ });
-    };
-    fetchEVI();
-    const interval = setInterval(fetchEVI, 30000); // every 30s
-    return () => clearInterval(interval);
-  }, [profile?.userId, backendOnline]);
 
   const updatePortfolio = useCallback(() => {
     const updated = defaultPortfolio.map(holding => {
@@ -134,15 +201,21 @@ export default function Dashboard() {
       return { ...holding, ...stock, ...priceData, currentValue, investedValue, pnl, pnlPercent };
     });
     setPortfolio(updated);
+    setTick(t => t + 1);
+
+    // Update market data in EVI store
     const totalPnlPercent = updated.reduce((sum, h) => sum + h.pnlPercent, 0) / updated.length;
-    const newEVI = calculateEVI({
+    const losers = updated.filter(h => h.changePercent < 0).length;
+    const gainers = updated.filter(h => h.changePercent >= 0).length;
+    const avgChange = updated.reduce((sum, h) => sum + (h.changePercent || 0), 0) / updated.length;
+
+    updateMarketData({
       portfolioLossPercent: totalPnlPercent,
-      marketVolatility: Math.random() * 0.5 + 0.2,
-      rapidActions: actionLog.filter(a => Date.now() - a.time < 60000).length,
-      recentTrades: actionLog.map(a => ({ type: a.type, priceChange: a.change || 0 })),
+      losersCount: losers,
+      gainersCount: gainers,
+      avgChangePercent: avgChange,
     });
-    setEVI(prev => Math.round(prev * 0.7 + newEVI * 0.3));
-  }, [actionLog]);
+  }, [updateMarketData]);
 
   const logBehavior = async (type, symbol, extra = {}) => {
     if (!profile?.userId) return;
@@ -160,8 +233,11 @@ export default function Dashboard() {
 
   const handleSellClick = (stock) => {
     setSelectedStock(stock);
+    recordEvent('sell_click', { symbol: stock.symbol, price: stock.price });
+
     if (evi > 60) {
       setShowModal(true);
+      recordEvent('sell_attempt', { symbol: stock.symbol, price: stock.price });
       logBehavior('sell_attempt', stock.symbol, { price: stock.price, quantity: stock.qty });
       setActionLog(prev => [...prev, { type: 'sell_attempt', symbol: stock.symbol, time: Date.now(), change: stock.changePercent }]);
     } else {
@@ -171,19 +247,33 @@ export default function Dashboard() {
     }
   };
 
+  const handleSellHover = useCallback((symbol) => {
+    recordEvent('sell_hover', { symbol });
+  }, [recordEvent]);
+
   const handleModalClose = (proceeded) => {
     setShowModal(false);
     if (proceeded) {
       setToast({ message: `WARNING: ${selectedStock?.symbol} SOLD DESPITE INTERVENTION`, type: 'warning' });
+      recordEvent('sell_confirmed', { symbol: selectedStock?.symbol });
       logBehavior('sell_confirmed', selectedStock?.symbol, { interventionResult: 'proceeded' });
     } else {
       setToast({ message: `HELD: ${selectedStock?.symbol} — POSITION RETAINED`, type: 'success' });
+      recordEvent('sell_cancelled', { symbol: selectedStock?.symbol });
       logBehavior('sell_cancelled', selectedStock?.symbol, { interventionResult: 'cancelled' });
     }
     setActionLog(prev => [
       ...prev,
       { type: proceeded ? 'sell' : 'cancel', symbol: selectedStock?.symbol, time: Date.now() }
     ]);
+  };
+
+  const handlePanelSwitch = (panel) => {
+    setActivePanel(panel);
+    if (panel === 'chat') {
+      recordEvent('ai_chat_opened');
+    }
+    recordEvent('page_switch', { panel });
   };
 
   const totalValue = portfolio.reduce((s, h) => s + h.currentValue, 0);
@@ -212,7 +302,8 @@ export default function Dashboard() {
           </nav>
         </div>
         <div className="flex items-center gap-4">
-          <ConnectionBadge online={backendOnline} />
+          <MarketStatusBadge status={marketStatus} />
+          <ConnectionBadge online={backendOnline} livePrices={liveMode} />
           <div className="text-right">
             <div className="text-[10px] text-terminal-muted uppercase tracking-wider">OPERATOR</div>
             <div className="font-mono text-sm">{profile.name || 'RAM'}</div>
@@ -240,7 +331,7 @@ export default function Dashboard() {
         ].map((s, i) => (
           <div key={i} className="px-4 py-2">
             <div className="text-[9px] text-terminal-muted uppercase tracking-[1.5px]">{s.label}</div>
-            <div className={`font-mono text-lg font-bold ${s.color}`}>{s.value}</div>
+            <div className={`font-mono text-lg font-bold ${s.color} transition-all duration-300`}>{s.value}</div>
           </div>
         ))}
       </div>
@@ -253,7 +344,14 @@ export default function Dashboard() {
           <div className="flex-1 overflow-auto p-0">
             <div className="px-3 py-2 border-b border-terminal-border flex items-center justify-between">
               <span className="text-[10px] uppercase tracking-[2px] text-terminal-muted">POSITIONS</span>
-              <span className="text-[10px] text-terminal-dim font-mono">{portfolio.length} ACTIVE</span>
+              <div className="flex items-center gap-2">
+                {liveMode && lastPriceUpdate && (
+                  <span className="text-[9px] text-terminal-cyan/50 font-mono">
+                    LAST UPDATE: {lastPriceUpdate.toLocaleTimeString('en-IN')}
+                  </span>
+                )}
+                <span className="text-[10px] text-terminal-dim font-mono">{portfolio.length} ACTIVE</span>
+              </div>
             </div>
             <table className="data-grid w-full text-xs">
               <thead>
@@ -283,6 +381,7 @@ export default function Dashboard() {
                     <td className="px-3 py-1.5">
                       <button
                         onClick={() => handleSellClick(h)}
+                        onMouseEnter={() => handleSellHover(h.symbol)}
                         className="btn-terminal px-2 py-0.5 text-[10px] font-mono font-bold border border-terminal-red/40 text-terminal-red hover:bg-terminal-red/10 uppercase tracking-wider"
                       >
                         SELL
@@ -310,14 +409,14 @@ export default function Dashboard() {
           {/* Panel Toggle */}
           <div className="flex divide-x divide-terminal-border">
             <button
-              onClick={() => setActivePanel('chat')}
+              onClick={() => handlePanelSwitch('chat')}
               className={`btn-terminal flex-1 py-1.5 text-[10px] uppercase tracking-[2px] font-semibold
                 ${activePanel === 'chat' ? 'bg-terminal-green/10 text-terminal-green' : 'text-terminal-muted hover:text-white hover:bg-white/5'}`}
             >
               ● AI COACH
             </button>
             <button
-              onClick={() => setActivePanel('graph')}
+              onClick={() => handlePanelSwitch('graph')}
               className={`btn-terminal flex-1 py-1.5 text-[10px] uppercase tracking-[2px] font-semibold
                 ${activePanel === 'graph' ? 'bg-terminal-green/10 text-terminal-green' : 'text-terminal-muted hover:text-white hover:bg-white/5'}`}
             >

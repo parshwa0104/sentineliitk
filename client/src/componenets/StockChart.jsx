@@ -54,8 +54,16 @@ export default function StockChart({ stocks, tick }) {
     const now = Math.floor(Date.now() / 1000);
     if (!priceHistoryRef.current[selectedSymbol]) priceHistoryRef.current[selectedSymbol] = [];
     const history = priceHistoryRef.current[selectedSymbol];
-    history.push({ time: now, value: stock.price });
-    if (history.length > 200) history.shift();
+    
+    // Fix: Lightweight charts crashes if timestamps are not strictly increasing
+    if (history.length > 0 && history[history.length - 1].time >= now) {
+      // Update the existing timestamp instead of pushing a duplicate
+      history[history.length - 1].value = stock.price;
+    } else {
+      history.push({ time: now, value: stock.price });
+      if (history.length > 200) history.shift();
+    }
+    
     seriesRef.current.setData(history);
   }, [tick, selectedSymbol, stocks]);
 

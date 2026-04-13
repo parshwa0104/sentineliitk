@@ -2,10 +2,11 @@ import React, { useState, useRef, useEffect } from 'react';
 import { postChat } from '../utils/api';
 
 export default function AIChat({ evi, portfolio }) {
+  const currentEvi = evi || 30;
   const [messages, setMessages] = useState([
     {
       role: 'assistant',
-      content: `SENTINEL AI ONLINE. Portfolio state loaded. EVI: ${evi || 73}. Ready for behavioral analysis. Query me on your trading patterns, emotional biases, or market strategy.`,
+      content: `SENTINEL AI ONLINE. Portfolio state loaded. EVI: ${currentEvi}. Ready for behavioral analysis. Query me on your trading patterns, emotional biases, or market strategy.`,
     },
   ]);
   const [input, setInput] = useState('');
