@@ -5,7 +5,7 @@ import axios from 'axios';
 // All frontend components should import from here instead of raw axios.
 
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: 'https://sentineliitk.onrender.com',
   timeout: 15000,
   headers: { 'Content-Type': 'application/json' },
 });
