@@ -4,8 +4,13 @@ import axios from 'axios';
 // Single Axios instance with timeout, error handling, and offline detection.
 // All frontend components should import from here instead of raw axios.
 
+// In dev (localhost), Vite proxy forwards /api → localhost:5000
+// In production (Vercel), we hit the Render backend directly
+const isProd = window.location.hostname !== 'localhost';
+const BASE = isProd ? 'https://sentineliitk.onrender.com/api' : '/api';
+
 const api = axios.create({
-  baseURL: 'https://sentineliitk.onrender.com',
+  baseURL: BASE,
   timeout: 15000,
   headers: { 'Content-Type': 'application/json' },
 });
