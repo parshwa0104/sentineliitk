@@ -59,8 +59,8 @@ function getOfflineFallback(userMsg) {
   return `[OFFLINE MODE — AI service unavailable]
 
 ${userMsg.toLowerCase().includes('sell')
-    ? 'CAUTION: Sell impulse during high EVI correlates with regret in 82% of cases. 91% of operators in similar states held and recovered.'
-    : 'Your engagement level suggests heightened awareness. Channel this into analysis, not action.'}
+      ? 'CAUTION: Sell impulse during high EVI correlates with regret in 82% of cases. 91% of operators in similar states held and recovered.'
+      : 'Your engagement level suggests heightened awareness. Channel this into analysis, not action.'}
 
 Connect to the backend server to get live AI analysis. Check that the server is running and GEMINI_API_KEY is configured.`;
 }
@@ -171,7 +171,7 @@ export default function AIChatPage() {
           <div className={`flex items-center gap-1.5 px-2 py-0.5 border text-[9px] font-mono uppercase tracking-wider
             ${evi > 70 ? 'border-terminal-red/30 text-terminal-red/70 animate-blink'
               : evi > 50 ? 'border-terminal-amber/30 text-terminal-amber/70'
-              : 'border-terminal-green/30 text-terminal-green/70'}`}>
+                : 'border-terminal-green/30 text-terminal-green/70'}`}>
             EVI: {evi}
           </div>
           <div className={`w-2 h-2 ${backendOnline ? 'bg-terminal-green' : 'bg-terminal-red'} animate-blink`} />
@@ -262,7 +262,7 @@ export default function AIChatPage() {
             {[
               { label: 'DATA SOURCE', value: isLivePricing() ? 'LIVE NSE' : 'SIMULATED', color: isLivePricing() ? 'text-terminal-cyan' : 'text-terminal-amber' },
               { label: 'EVI STATUS', value: evi > 70 ? 'CRITICAL' : evi > 50 ? 'ELEVATED' : 'NORMAL', color: evi > 70 ? 'text-terminal-red' : evi > 50 ? 'text-terminal-amber' : 'text-terminal-green' },
-              { label: 'AI ENGINE', value: backendOnline ? 'GEMINI' : 'OFFLINE', color: backendOnline ? 'text-terminal-green' : 'text-terminal-red' },
+              { label: 'AI ENGINE', value: backendOnline ? 'SENTINEL.AI' : 'OFFLINE', color: backendOnline ? 'text-terminal-green' : 'text-terminal-red' },
             ].map((s, i) => (
               <div key={i} className="flex justify-between items-center py-1 border-b border-terminal-border/30">
                 <span className="text-[10px] text-terminal-muted font-mono">{s.label}</span>
